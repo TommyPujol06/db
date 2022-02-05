@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs::File;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
@@ -8,6 +9,8 @@ pub enum Error {
     NotFound,
     FileError(std::io::Error),
     TableAlreadyExists,
+    InvalidColumn,
+    InvalidTable,
     Unknown,
 }
 
@@ -33,21 +36,34 @@ impl Column {
 
 #[derive(Deserialize, Serialize)]
 pub enum ColumnData {
-    Int(u32),
-    Float(f64),
-    Str(String),
+    Int(Vec<u32>),
+    Float(Vec<f64>),
+    Str(Vec<String>),
 }
 
 #[derive(Deserialize, Serialize)]
 pub struct Table {
     pub name: String,
     pub cols: Vec<Column>,
+    pub rows: HashMap<String, ColumnData>,
 }
 
 impl Table {
     pub fn new<S: Into<String>>(name: S, cols: Vec<Column>) -> Self {
         let name = name.into();
-        Self { name, cols }
+        let mut rows = HashMap::new();
+
+        for col in &cols {
+            let col_data = match col.kind {
+                DataType::Int => ColumnData::Int(Vec::new()),
+                DataType::Float => ColumnData::Float(Vec::new()),
+                DataType::Str => ColumnData::Str(Vec::new()),
+            };
+
+            rows.insert(col.name.clone(), col_data);
+        }
+
+        Self { name, cols, rows }
     }
 }
 
@@ -63,40 +79,89 @@ impl Database {
         P: 'a + ?Sized + AsRef<Path>,
     {
         let path = path.as_ref();
+        let mut tables = Vec::new();
+        if path.exists() {
+            {
+                let mut file = File::open(path).unwrap();
+                let mut bytes = vec![];
+                file.read_to_end(&mut bytes).expect("Could not read file!");
+
+                tables = bincode::deserialize(&bytes[..])
+                    .expect("Could not deserialize data! Invalid file format!");
+            }
+        }
         let file = File::create(path).unwrap();
         Self {
             path: path.to_path_buf(),
             file: file,
-            tables: Vec::new(), // TODO: Load tables from file if it exists.
+            tables: tables,
         }
     }
 
-    pub fn insert<T, S>(&self, data: T, table: S) -> Result<(), Error>
+    pub fn insert<A, B>(&mut self, cols: Vec<A>, values: Vec<A>, table: B) -> Result<(), Error>
     where
-        T: serde::ser::Serialize,
-        S: Into<String>,
+        A: Into<String>,
+        B: Into<String>,
     {
-        let _ = data;
-        let _ = table;
+        if let Some(table) = self.get_table_mut(table) {
+            for ((_, col), val) in (0..cols.len()).zip(cols).zip(values) {
+                let val = val.into();
+                let col = col.into();
 
-        Err(Error::Unknown)
+                if let Some(col) = table.cols.iter_mut().find(|c| c.name == *col) {
+                    if let Some(row) = table.rows.get_mut(&col.name) {
+                        match col.kind {
+                            DataType::Int => {
+                                let val = val.parse::<u32>().unwrap();
+                                if let ColumnData::Int(row) = row {
+                                    row.push(val);
+                                }
+                            }
+                            DataType::Float => {
+                                let val = val.parse::<f64>().unwrap();
+                                if let ColumnData::Float(row) = row {
+                                    row.push(val);
+                                }
+                            }
+                            DataType::Str => {
+                                if let ColumnData::Str(row) = row {
+                                    row.push(val);
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    return Err(Error::InvalidColumn);
+                }
+            }
+        } else {
+            return Err(Error::InvalidTable);
+        }
+
+        Ok(())
     }
 
-    pub fn query<T, S>(&self, entry: T, table: S) -> Result<T, Error>
+    pub fn search<R, A, B>(&self, col: A, val: A, table: B) -> Result<Option<R>, Error>
     where
-        T: serde::ser::Serialize,
-        S: Into<String>,
+        A: Into<String>,
+        B: Into<String>,
     {
-        let _ = entry;
-        let _ = table;
+        let _col = col.into();
+        let _val = val.into();
+        let _table = table.into();
 
-        Err(Error::Unknown)
+        // if let Some(table) = self.get_table(&table) {
+        //     if let Some(row) = table.rows.get(&col) {}
+        // } else {
+        //     return Err(Error::InvalidTable);
+        // }
+        //
+        Ok(None)
     }
 
-    pub fn update<T, S>(&self, entry: T, table: S) -> Result<(), Error>
+    pub fn update<T>(&mut self, entry: T, table: &mut Table) -> Result<(), Error>
     where
         T: serde::ser::Serialize,
-        S: Into<String>,
     {
         let _ = entry;
         let _ = table;
@@ -154,7 +219,7 @@ mod tests {
 
     #[test]
     fn test_insert() {
-        let mut db = Database::new("./test.db");
+        let mut db = Database::new("./test1.db");
         let people = Table::new(
             "people",
             vec![
@@ -165,13 +230,49 @@ mod tests {
 
         assert_eq!(db.insert_table(people).is_err(), false);
 
-        let data = vec![ColumnData::Str(String::from("Tommy")), ColumnData::Int(16)];
-        assert_eq!(db.insert(data, "people").is_err(), true);
+        let table = "people";
+        let columns = vec!["name", "age"];
+        let data = vec!["Tommy", "16"];
+
+        assert_eq!(db.insert(columns, data, table).is_err(), false);
     }
 
     #[test]
-    fn duplicate_tables() {
-        let mut db = Database::new("./test.db");
+    fn test_search() {
+        let mut db = Database::new("./test2.db");
+        let people = Table::new(
+            "people",
+            vec![
+                Column::new("name", DataType::Str),
+                Column::new("age", DataType::Int),
+            ],
+        );
+
+        assert_eq!(db.insert_table(people).is_err(), false);
+
+        let table = "people";
+        let columns = vec!["name", "age"];
+        let data = vec!["Tommy", "16"];
+
+        assert_eq!(db.insert(columns, data, table).is_err(), false);
+
+        assert_eq!(
+            db.search::<Option<String>, &str, &str>("name", "Tommy", "people")
+                .unwrap()
+                .is_none(),
+            false
+        );
+        assert_eq!(
+            db.search::<Option<String>, &str, &str>("name", "Tomàs", "people")
+                .unwrap()
+                .is_none(),
+            true
+        );
+    }
+
+    #[test]
+    fn test_duplicate_tables() {
+        let mut db = Database::new("./test3.db");
         let people1 = Table::new(
             "people",
             vec![
