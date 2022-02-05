@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -11,6 +11,7 @@ pub enum Error {
     TableAlreadyExists,
     InvalidColumn,
     InvalidTable,
+    InvalidIndex,
     Unknown,
 }
 
@@ -22,23 +23,76 @@ pub enum DataType {
 }
 
 #[derive(Deserialize, Serialize)]
+pub enum Index {
+    Int(BTreeMap<i32, usize>),
+    Str(BTreeMap<String, usize>),
+    None,
+}
+
+impl Index {
+    pub fn get<S: Into<String>>(&self, val: S) -> Result<Option<&usize>, Error> {
+        let val = val.into();
+
+        match self {
+            Index::Int(index) => match val.parse::<i32>() {
+                Ok(val) => Ok(index.get(&val)),
+                _ => Err(Error::InvalidIndex),
+            },
+            Index::Str(index) => Ok(index.get(&val)),
+            Index::None => Ok(None),
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize)]
 pub struct Column {
     pub name: String,
     pub kind: DataType,
+    pub index: Index,
+    pub is_indexed: bool,
 }
 
 impl Column {
-    pub fn new<S: Into<String>>(name: S, kind: DataType) -> Self {
+    pub fn new<S: Into<String>>(name: S, kind: DataType, is_indexed: bool) -> Self {
         let name = name.into();
-        Self { name, kind }
+        let index = match kind {
+            DataType::Int => Index::Int(BTreeMap::new()),
+            DataType::Str => Index::Str(BTreeMap::new()),
+            _ => Index::None,
+        };
+
+        Self {
+            name,
+            kind,
+            index,
+            is_indexed,
+        }
+    }
+
+    pub fn get_index(&self) -> &Index {
+        &self.index
+    }
+
+    pub fn get_index_mut(&mut self) -> &mut Index {
+        &mut self.index
     }
 }
 
 #[derive(Deserialize, Serialize)]
 pub enum ColumnData {
-    Int(Vec<u32>),
+    Int(Vec<i32>),
     Float(Vec<f64>),
     Str(Vec<String>),
+}
+
+impl ColumnData {
+    pub fn size(&self) -> usize {
+        match self {
+            ColumnData::Int(vec) => vec.len(),
+            ColumnData::Float(vec) => vec.len(),
+            ColumnData::Str(vec) => vec.len(),
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize)]
@@ -110,11 +164,16 @@ impl Database {
 
                 if let Some(col) = table.cols.iter_mut().find(|c| c.name == *col) {
                     if let Some(row) = table.rows.get_mut(&col.name) {
+                        let size = row.size();
                         match col.kind {
                             DataType::Int => {
-                                let val = val.parse::<u32>().unwrap();
+                                let val = val.parse::<i32>().unwrap();
                                 if let ColumnData::Int(row) = row {
                                     row.push(val);
+                                }
+
+                                if let Index::Int(index) = &mut col.index {
+                                    index.insert(val, size);
                                 }
                             }
                             DataType::Float => {
@@ -125,7 +184,10 @@ impl Database {
                             }
                             DataType::Str => {
                                 if let ColumnData::Str(row) = row {
-                                    row.push(val);
+                                    row.push(val.clone());
+                                }
+                                if let Index::Str(index) = &mut col.index {
+                                    index.insert(val, size);
                                 }
                             }
                         }
@@ -223,8 +285,8 @@ mod tests {
         let people = Table::new(
             "people",
             vec![
-                Column::new("name", DataType::Str),
-                Column::new("age", DataType::Int),
+                Column::new("name", DataType::Str, true),
+                Column::new("age", DataType::Int, false),
             ],
         );
 
@@ -243,8 +305,8 @@ mod tests {
         let people = Table::new(
             "people",
             vec![
-                Column::new("name", DataType::Str),
-                Column::new("age", DataType::Int),
+                Column::new("name", DataType::Str, true),
+                Column::new("age", DataType::Int, false),
             ],
         );
 
@@ -276,16 +338,16 @@ mod tests {
         let people1 = Table::new(
             "people",
             vec![
-                Column::new("name", DataType::Str),
-                Column::new("age", DataType::Int),
+                Column::new("name", DataType::Str, true),
+                Column::new("age", DataType::Int, false),
             ],
         );
 
         let people2 = Table::new(
             "people",
             vec![
-                Column::new("name", DataType::Str),
-                Column::new("age", DataType::Int),
+                Column::new("name", DataType::Str, true),
+                Column::new("age", DataType::Int, false),
             ],
         );
 
