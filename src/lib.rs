@@ -22,6 +22,39 @@ pub enum DataType {
     Str,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+pub enum ResultDT {
+    Int(i32),
+    Float(f64),
+    Str(String),
+    None,
+}
+
+impl PartialEq for ResultDT {
+    fn eq(&self, other: &Self) -> bool {
+        match self {
+            ResultDT::Int(val) => match other {
+                ResultDT::Int(val2) => val == val2,
+                _ => false,
+            },
+            ResultDT::Float(val) => match other {
+                ResultDT::Float(val2) => val == val2,
+                _ => false,
+            },
+            ResultDT::Str(val) => match other {
+                ResultDT::Str(val2) => val == val2,
+                _ => false,
+            },
+            ResultDT::None => match other {
+                ResultDT::None => true,
+                _ => false,
+            },
+        }
+    }
+}
+
+impl Eq for ResultDT {}
+
 #[derive(Deserialize, Serialize)]
 pub enum Index {
     Int(BTreeMap<i32, usize>),
@@ -91,6 +124,14 @@ impl ColumnData {
             ColumnData::Int(vec) => vec.len(),
             ColumnData::Float(vec) => vec.len(),
             ColumnData::Str(vec) => vec.len(),
+        }
+    }
+
+    pub fn get_from_idx(&self, idx: usize) -> ResultDT {
+        match self {
+            ColumnData::Int(vec) => ResultDT::Int(vec[idx]),
+            ColumnData::Float(vec) => ResultDT::Float(vec[idx]),
+            ColumnData::Str(vec) => ResultDT::Str(vec[idx].clone()),
         }
     }
 }
@@ -203,33 +244,71 @@ impl Database {
         Ok(())
     }
 
-    pub fn search<R, A, B>(&self, col: A, val: A, table: B) -> Result<Option<R>, Error>
+    // pub fn search<R, A, B>(&self, col: A, val: A, table: B) -> Result<Option<R>, Error>
+    // where
+    //     A: Into<String>,
+    //     B: Into<String>,
+    // {
+    //     Ok(None)
+    // }
+
+    pub fn search_idx<A, B>(
+        &self,
+        s_col: Vec<A>,
+        idx: &usize,
+        table: B,
+    ) -> Result<Vec<ResultDT>, Error>
     where
         A: Into<String>,
         B: Into<String>,
     {
-        let _col = col.into();
-        let _val = val.into();
-        let _table = table.into();
+        let mut data = Vec::new();
+        if let Some(table) = self.get_table(table) {
+            for col in s_col {
+                let col = col.into();
+                if let Some(row) = table.rows.get(&col) {
+                    data.push(row.get_from_idx(*idx));
+                }
+            }
+        } else {
+            return Err(Error::InvalidTable);
+        }
 
-        // if let Some(table) = self.get_table(&table) {
-        //     if let Some(row) = table.rows.get(&col) {}
-        // } else {
-        //     return Err(Error::InvalidTable);
-        // }
-        //
-        Ok(None)
+        Ok(data)
     }
 
-    pub fn update<T>(&mut self, entry: T, table: &mut Table) -> Result<(), Error>
-    where
-        T: serde::ser::Serialize,
-    {
-        let _ = entry;
-        let _ = table;
+    // pub fn update<A, B>(&mut self, idx: &usize, table: B) -> Result<(), Error>
+    // where
+    //     A: Into<String>,
+    //     B: Into<String>,
+    // {
+    //     if let Some(table) = self.get_table_mut(table) {}
 
-        Err(Error::Unknown)
-    }
+    //     Err(Error::Unknown)
+    // }
+
+    // pub fn update_with_idx<A, B>(
+    //     &mut self,
+    //     col: A,
+    //     idx: &usize,
+    //     new: A,
+    //     table: B,
+    // ) -> Result<(), Error>
+    // where
+    //     A: Into<String>,
+    //     B: Into<String>,
+    // {
+    //     if let Some(table) = self.get_table_mut(table) {
+    //         let col = col.into();
+    //         if let Some(col) = table.cols.get(&col) {
+    //             if let Some(row) = table.rows.get_mut(&col) {
+    //                 row.get_from_idx_mut(*idx) = new;
+    //             }
+    //         }
+    //     }
+
+    //     Err(Error::Unknown)
+    // }
 
     pub fn insert_table(&mut self, table: Table) -> Result<(), Error> {
         if let Some(_) = self.get_table(&table.name) {
@@ -300,7 +379,7 @@ mod tests {
     }
 
     #[test]
-    fn test_search() {
+    fn test_search_idx() {
         let mut db = Database::new("./test2.db");
         let people = Table::new(
             "people",
@@ -319,16 +398,9 @@ mod tests {
         assert_eq!(db.insert(columns, data, table).is_err(), false);
 
         assert_eq!(
-            db.search::<Option<String>, &str, &str>("name", "Tommy", "people")
-                .unwrap()
-                .is_none(),
-            false
-        );
-        assert_eq!(
-            db.search::<Option<String>, &str, &str>("name", "Tomàs", "people")
-                .unwrap()
-                .is_none(),
-            true
+            db.search_idx(vec!["name", "age"], &0, "people") // SELECT name, age FROM people WHERE idx = 0;
+                .unwrap(),
+            vec![ResultDT::Str("Tommy".to_string()), ResultDT::Int(16)]
         );
     }
 
